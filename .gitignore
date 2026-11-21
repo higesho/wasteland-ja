@@ -1,0 +1,10 @@
+build/
+work/
+capture/
+text/
+font/
+orig/
+test/
+CLAUDE.md
+__pycache__/
+src/tools/ui_ja.py
