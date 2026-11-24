@@ -16,12 +16,13 @@
 #include "resource.h"
 
 void proxy_init(void);
-void testio_init(void);
 void patch_iat(HMODULE m, const char *dll, const char *fn, void *hook, void **orig);
-extern int g_testmode;
 
 static char g_dir[MAX_PATH];
 static char g_cache[MAX_PATH];
+#ifdef WLJP_TEST
+/* 試験版だけ: testio.c（build.bat test でだけコンパイルする） */
+void testio_init(void);
 static FILE *g_log;
 static int g_logon;
 static void dbg(const char *fmt, ...)
@@ -38,6 +39,34 @@ static void dbg(const char *fmt, ...)
     vfprintf(g_log, fmt, ap);
     va_end(ap);
     fflush(g_log);
+}
+#else
+#define dbg(...) ((void)0)   /* 配布版はログを書かない */
+#endif
+
+/* IAT の 1 項目を差し替える（自分の関数をゲームの呼び出しに挟む） */
+void patch_iat(HMODULE m, const char *dll, const char *fn, void *hook, void **orig)
+{
+    uint8_t *b = (uint8_t*)m;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS*)(b + ((IMAGE_DOS_HEADER*)b)->e_lfanew);
+    IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    IMAGE_IMPORT_DESCRIPTOR *d = (IMAGE_IMPORT_DESCRIPTOR*)(b + dd.VirtualAddress);
+    for (; d->Name; d++) {
+        IMAGE_THUNK_DATA *ot, *ft;
+        if (lstrcmpiA((const char*)(b + d->Name), dll)) continue;
+        ot = (IMAGE_THUNK_DATA*)(b + d->OriginalFirstThunk); ft = (IMAGE_THUNK_DATA*)(b + d->FirstThunk);
+        for (; ot->u1.AddressOfData; ot++, ft++) {
+            IMAGE_IMPORT_BY_NAME *ibn;
+            DWORD old;
+            if (ot->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;
+            ibn = (IMAGE_IMPORT_BY_NAME*)(b + ot->u1.AddressOfData);
+            if (strcmp((const char*)ibn->Name, fn)) continue;
+            if (orig) *orig = (void*)ft->u1.Function;
+            VirtualProtect(&ft->u1.Function, 4, PAGE_READWRITE, &old);
+            ft->u1.Function = (DWORD)(uintptr_t)hook;
+            VirtualProtect(&ft->u1.Function, 4, old, &old);
+        }
+    }
 }
 
 /* ------------------------------------------------ DOSBox（wasteland.exe）の中身
@@ -116,6 +145,7 @@ static __inline void ww(uint32_t a, uint16_t v) { wb(a, (uint8_t)v); wb(a + 1, (
 #define PHYS_DS PHYS(3)
 static void push16(uint16_t v) { SET16(4, R_SP - 2); ww(PHYS_SS + R_SP, v); }
 
+#ifdef WLJP_TEST
 /* テスト: DOS のメモリを書き出す */
 void testio_dump(uint32_t addr, uint32_t len, const char *path)
 {
@@ -137,6 +167,7 @@ void testio_dump(uint32_t addr, uint32_t len, const char *path)
     free(b);
     dbg("dump %x %x cs=%04x ds=%04x\n", addr, len, SEGV(1), SEGV(3));
 }
+#endif
 
 /* ------------------------------------------------------- パッチデータ（RCDATA 101）
  * 'WLJ1', 節の数, 節 {u8 種類, u32 長さ, 中身}
@@ -319,6 +350,7 @@ static strst *get_state(int kind)
         s->b1 = st;
     }
     s->tr = find_tr(s->src, s->srclen, &s->trlen);
+#ifdef WLJP_TEST
     if (g_logon) {
         int i;
         dbg("%s%c %08x \"", s->tr ? "T" : "-", kind == 1 ? 'P' : 'C', fnv(s->src, s->srclen));
@@ -328,6 +360,7 @@ static strst *get_state(int kind)
         }
         dbg("\"\n");
     }
+#endif
     return s;
 }
 /* 次に出す 1 字（0 で終わり）。字形は枠に入れて 0xA0-0xFF にする */
@@ -601,7 +634,9 @@ static int ends_with(const char *s, const char *t)
 static FILE *__cdecl hook_fopen(const char *path, const char *mode)
 {
     char p[MAX_PATH];
+#ifdef WLJP_TEST
     if (g_logon && path && !strstr(path, "wljp")) dbg("fopen %s %s\n", path, mode);
+#endif
     if (!g_enabled || !path || !mode || mode[0] != 'r') return real_fopen(path, mode);
     if (ends_with(path, "paragraphs.bin")) {
         if (build_para(p)) { dbg("-> %s\n", p); return real_fopen(p, mode); }
@@ -686,7 +721,9 @@ static const char *scaler_sub(const char *v, size_t n)
 }
 static FILE *__cdecl hook_fsopen(const char *path, const char *mode, int sh)
 {
+#ifdef WLJP_TEST
     if (g_logon) dbg("fsopen %s %s %d\n", path ? path : "-", mode ? mode : "-", sh);
+#endif
     if (g_enabled && path && mode && mode[0] == 'r' && ends_with(path, ".conf")) {
         FILE *f = fopen(path, "rb");   /* 自分の CRT で読む（msvcr100 の FILE は使えない） */
         if (f) {
@@ -752,17 +789,26 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID p)
 {
     (void)p;
     if (r == DLL_PROCESS_ATTACH) {
-        char *s, f[MAX_PATH];
+        char *s;
+#ifdef WLJP_TEST
+        char f[MAX_PATH];
+#endif
         DisableThreadLibraryCalls(h);
         GetModuleFileNameA(NULL, g_dir, MAX_PATH);
         s = strrchr(g_dir, '\\');
         if (s) *s = 0;
+#ifdef WLJP_TEST
         wsprintfA(f, "%s\\wljp_log", g_dir);
         g_logon = GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES;
         wsprintfA(f, "%s\\wljp_en", g_dir);
         g_enabled = GetFileAttributesA(f) == INVALID_FILE_ATTRIBUTES;   /* テスト: 英語のまま動かす */
+#else
+        g_enabled = 1;
+#endif
         proxy_init();
+#ifdef WLJP_TEST
         testio_init();
+#endif
         if (!GetEnvironmentVariableA("LOCALAPPDATA", g_cache, MAX_PATH)) lstrcpyA(g_cache, g_dir);
         lstrcatA(g_cache, "\\WL_JP");
         CreateDirectoryA(g_cache, NULL);

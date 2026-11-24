@@ -134,7 +134,7 @@ def start(variant):
     if os.path.exists(dst):
         os.remove(dst)
     if variant != 'en':
-        shutil.copy(os.path.join(ROOT, 'build', 'winmm.dll'), dst)
+        shutil.copy(os.path.join(ROOT, 'build', 'test', 'winmm.dll'), dst)   # 試験版（build.bat test）
     with open(os.path.join(GAME, 'steam_appid.txt'), 'w') as f:
         f.write('240760')
     # テスト機能・ログはゲームのフォルダのフラグファイルで入れる（Steam が起動し直すので環境変数は届かない）

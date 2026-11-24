@@ -1,5 +1,6 @@
 /*
  * テスト用: ゲームのフォルダに wljp_test というファイルがあるときだけ動く（Steam が起動し直すので環境変数は使えない）。
+ * 試験版（build.bat test、/DWLJP_TEST）でだけコンパイルする。配布版には入らない。
  * 共有メモリ "WLJP_TESTIO"（tools/win.py が使う）
  *   +0   magic, req, ack, frame, path[260]   画面（SDL の画面サーフェス）を BMP に書き出す
  *   +276 ereq, eack, ev[4]                   SDL_PushEvent で入力を入れる（ウインドウを前面に出さない）
@@ -150,29 +151,8 @@ static DWORD WINAPI shot_thread(LPVOID p)
     }
 }
 
-void patch_iat(HMODULE m, const char *dll, const char *fn, void *hook, void **orig)
-{
-    uint8_t *b = (uint8_t*)m;
-    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS*)(b + ((IMAGE_DOS_HEADER*)b)->e_lfanew);
-    IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    IMAGE_IMPORT_DESCRIPTOR *d = (IMAGE_IMPORT_DESCRIPTOR*)(b + dd.VirtualAddress);
-    for (; d->Name; d++) {
-        IMAGE_THUNK_DATA *ot, *ft;
-        if (lstrcmpiA((const char*)(b + d->Name), dll)) continue;
-        ot = (IMAGE_THUNK_DATA*)(b + d->OriginalFirstThunk); ft = (IMAGE_THUNK_DATA*)(b + d->FirstThunk);
-        for (; ot->u1.AddressOfData; ot++, ft++) {
-            IMAGE_IMPORT_BY_NAME *ibn;
-            DWORD old;
-            if (ot->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;
-            ibn = (IMAGE_IMPORT_BY_NAME*)(b + ot->u1.AddressOfData);
-            if (strcmp((const char*)ibn->Name, fn)) continue;
-            if (orig) *orig = (void*)ft->u1.Function;
-            VirtualProtect(&ft->u1.Function, 4, PAGE_READWRITE, &old);
-            ft->u1.Function = (DWORD)(uintptr_t)hook;
-            VirtualProtect(&ft->u1.Function, 4, old, &old);
-        }
-    }
-}
+/* wl_jp.c */
+void patch_iat(HMODULE m, const char *dll, const char *fn, void *hook, void **orig);
 
 void testio_init(void)
 {
